@@ -50,7 +50,17 @@ async function startServer() {
           }
         });
 
-        const data = JSON.parse(response.text?.trim() || "{}");
+        let text = response.text?.trim() || "{}";
+        if (text.startsWith("```json")) text = text.slice(7, -3).trim();
+        if (text.startsWith("```")) text = text.slice(3, -3).trim();
+
+        const firstBrace = text.indexOf('{');
+        if (firstBrace !== -1 && !text.startsWith('{')) {
+          const lastBrace = text.lastIndexOf('}');
+          if (lastBrace > firstBrace) text = text.substring(firstBrace, lastBrace + 1);
+        }
+
+        const data = JSON.parse(text);
         res.json(data);
       } catch (err: any) {
         console.error("Gemini AI API Error:", err);
@@ -168,7 +178,17 @@ async function startServer() {
           }
         });
 
-        const data = JSON.parse(response.text?.trim() || "{}");
+        let text = response.text?.trim() || "{}";
+        if (text.startsWith("```json")) text = text.slice(7, -3).trim();
+        if (text.startsWith("```")) text = text.slice(3, -3).trim();
+
+        const firstBrace = text.indexOf('{');
+        if (firstBrace !== -1 && !text.startsWith('{')) {
+          const lastBrace = text.lastIndexOf('}');
+          if (lastBrace > firstBrace) text = text.substring(firstBrace, lastBrace + 1);
+        }
+
+        const data = JSON.parse(text);
         res.json(data);
       } catch (err: any) {
         console.error("Gemini AI API Error:", err);

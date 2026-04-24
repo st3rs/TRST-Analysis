@@ -321,7 +321,9 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
+        const textRes = await response.text();
+        let err;
+        try { err = JSON.parse(textRes); } catch(e) { err = { error: textRes.slice(0, 100) }; }
         throw new Error(err.error || "Failed to fetch preview from backend");
       }
 
@@ -382,14 +384,19 @@ export default function App() {
         body: JSON.stringify({ urlToAnalyze, lang })
       }).then(async res => {
         if (!res.ok) {
-          const err = await res.json();
+          const textRes = await res.text();
+          let err;
+          try { err = JSON.parse(textRes); } catch(e) { err = { error: textRes.slice(0, 100) }; }
           throw new Error(err.error || "Failed to analyze link from backend");
         }
         return res.json();
       });
 
       const threatIntelPromise = fetch(`/api/threat-intel?url=${encodeURIComponent(urlToAnalyze)}`)
-        .then(res => res.json())
+        .then(async res => {
+          if (!res.ok) return null;
+          return res.json();
+        })
         .catch(err => {
           console.error("Threat intel fetch failed:", err);
           return null;
