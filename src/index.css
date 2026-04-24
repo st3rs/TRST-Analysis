@@ -81,6 +81,14 @@
   @apply text-sm font-mono text-foreground;
 }
 
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 .section-title {
   @apply font-sans font-semibold text-lg tracking-tight border-b pb-2 mb-4;
 }
