@@ -314,26 +314,18 @@ export default function App() {
     setReport(null);
 
     try {
-      const responseSchema = {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING, description: "Website title or entity name." },
-          category: { type: Type.STRING, description: "Broad category (e.g. E-Commerce, Social Media, Forum, Suspicious)." },
-          snippet: { type: Type.STRING, description: "A concise 1-2 sentence preview or known meta description." }
-        }
-      };
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: `Fetch a quick preview/metadata for the website: ${url}. Use Google Search to find its title and context. Keep it brief.`,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: responseSchema,
-        }
+      const response = await fetch('/api/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
       });
 
-      const data = JSON.parse(response.text.trim());
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to fetch preview from backend");
+      }
+
+      const data = await response.json();
       setPreview({
         url: url,
         title: data.title,

@@ -19,7 +19,48 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  app.post("/api/analyze", async (req, res) => {
+  app.post("/api/preview", async (req, res) => {
+    try {
+      const { url } = req.body;
+      if (!url) {
+        return res.status(400).json({ error: "Missing url parameter" });
+      }
+
+      let _genAI = null;
+      try {
+        const { GoogleGenAI, Type } = await import("@google/genai");
+        _genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        
+        const responseSchema = {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING, description: "Website title or entity name." },
+            category: { type: Type.STRING, description: "Broad category (e.g. E-Commerce, Social Media, Forum, Suspicious)." },
+            snippet: { type: Type.STRING, description: "A concise 1-2 sentence preview or known meta description." }
+          }
+        };
+
+        const response = await _genAI.models.generateContent({
+          model: "gemini-3.1-pro-preview",
+          contents: `Fetch a quick preview/metadata for the website: ${url}. Use Google Search to find its title and context. Keep it brief.`,
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+            responseSchema: responseSchema,
+          }
+        });
+
+        const data = JSON.parse(response.text?.trim() || "{}");
+        res.json(data);
+      } catch (err: any) {
+        console.error("Gemini AI API Error:", err);
+        return res.status(500).json({ error: "Failed to fetch preview via backend: " + err.message });
+      }
+    } catch (error: any) {
+      console.error("Preview Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
     try {
       const { urlToAnalyze, lang } = req.body;
       if (!urlToAnalyze) {
