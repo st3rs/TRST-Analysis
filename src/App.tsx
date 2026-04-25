@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { GoogleGenAI, Type } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   ShieldAlert, 
@@ -314,20 +315,44 @@ export default function App() {
     setReport(null);
 
     try {
-      const response = await fetch('/api/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY is missing. Please configure it in the platform settings.");
+      }
+      
+      const ai = new GoogleGenAI({ apiKey });
+      
+      const responseSchema = {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING, description: "Website title or entity name." },
+            category: { type: Type.STRING, description: "Broad category (e.g. E-Commerce, Social Media, Forum, Suspicious)." },
+            snippet: { type: Type.STRING, description: "A concise 1-2 sentence preview or known meta description." }
+          }
+      };
+
+      const response = await ai.models.generateContent({
+          model: "gemini-3.1-pro-preview",
+          contents: `Fetch a quick preview/metadata for the website: ${url}. Use Google Search to find its title and context. Keep it brief.`,
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+            responseSchema: responseSchema,
+          }
       });
 
-      if (!response.ok) {
-        const textRes = await response.text();
-        let err;
-        try { err = JSON.parse(textRes); } catch(e) { err = { error: textRes.slice(0, 100) }; }
-        throw new Error(err.error || "Failed to fetch preview from backend");
+      let text = response.text?.trim() || "{}";
+      if (text.startsWith("```json")) text = text.slice(7, -3).trim();
+      if (text.startsWith("```")) text = text.slice(3, -3).trim();
+
+      const firstBrace = text.indexOf('{');
+      if (firstBrace !== -1 && !text.startsWith('{')) {
+        const lastBrace = text.lastIndexOf('}');
+        if (lastBrace > firstBrace) text = text.substring(firstBrace, lastBrace + 1);
       }
 
-      const data = await response.json();
+      const data = JSON.parse(text);
+
       setPreview({
         url: url,
         title: data.title,
@@ -335,7 +360,12 @@ export default function App() {
         snippet: data.snippet
       });
     } catch (err: any) {
-      setError(err?.message || "Failed to fetch top-level target preview.");
+      console.error(err);
+      if (err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED')) {
+        setError("Rate limit exceeded. Please wait a moment before trying again.");
+      } else {
+        setError(err?.message || "Failed to fetch top-level target preview.");
+      }
     } finally {
       setIsPreviewing(false);
     }
@@ -378,19 +408,121 @@ export default function App() {
     simulateProgress();
 
     try {
-      const generateReportPromise = fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urlToAnalyze, lang })
-      }).then(async res => {
-        if (!res.ok) {
-          const textRes = await res.text();
-          let err;
-          try { err = JSON.parse(textRes); } catch(e) { err = { error: textRes.slice(0, 100) }; }
-          throw new Error(err.error || "Failed to analyze link from backend");
+      const generateReportPromise = (async () => {
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          throw new Error("GEMINI_API_KEY is missing. Please configure it in the platform settings.");
         }
-        return res.json();
-      });
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const responseSchema = {
+          type: Type.OBJECT,
+          properties: {
+            summary: { type: Type.STRING, description: "A formal, professional intelligence summary of the website/link contents and purpose." },
+            riskScore: { type: Type.NUMBER, description: "Risk score from 0 to 100 based on likelihood of malicious intent." },
+            riskLevel: { type: Type.STRING, description: "Low, Medium, High, or Critical." },
+            domainInfo: {
+              type: Type.OBJECT,
+              properties: {
+                registrar: { type: Type.STRING, description: "The domain registrar." },
+                creationDate: { type: Type.STRING, description: "The date the domain was created." },
+                serverLocation: { type: Type.STRING, description: "The physical server location or country." }
+              }
+            },
+            ipInfo: {
+              type: Type.OBJECT,
+              properties: {
+                ip: { type: Type.STRING, description: "Resolved IP Address" },
+                organization: { type: Type.STRING, description: "Hosting provider or ASN organization" },
+                location: { type: Type.STRING, description: "City & Country of the IP" },
+                associatedDomains: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Other domains hosted on the same IP" },
+                asn: { type: Type.STRING, description: "Autonomous System Number (ASN) details" },
+                registrationDate: { type: Type.STRING, description: "IP Address Registration Date/Info" },
+                reputationScore: { type: Type.NUMBER, description: "Historical IP reputation score (0-100, 100 being worst)" }
+              }
+            },
+            relatedLinks: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  url: { type: Type.STRING },
+                  reason: { type: Type.STRING, description: "Why this link is related" }
+                }
+              },
+              description: "Other URLs, subdomains, or external links discovered during investigation"
+            },
+            flags: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Any suspicious indicators, red flags, or notable operational security details."
+            },
+            recommendations: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Formal recommendations for the investigating officer on what to do next based on this link."
+            },
+            timeline: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  date: { type: Type.STRING, description: "Date or time of the event (e.g., '2023-01-15' or 'January 2023')" },
+                  title: { type: Type.STRING, description: "A brief, clear title for the event" },
+                  description: { type: Type.STRING, description: "More detailed context about the event" },
+                  type: { type: Type.STRING, description: "Must be 'registration', 'update', 'social', or 'other'" }
+                }
+              },
+              description: "A chronological timeline of significant events (registration dates, updates, posts, discoveries)."
+            },
+            socialMediaPosts: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  platform: { type: Type.STRING, description: "Name of the social media platform (e.g., Twitter, Facebook, Instagram, TikTok)" },
+                  accountHandle: { type: Type.STRING, description: "Username or handle (e.g., @johndoe)" },
+                  accountName: { type: Type.STRING, description: "Display name of the account" },
+                  postContent: { type: Type.STRING, description: "Extracted text content of the post/tweet/message" },
+                  postDate: { type: Type.STRING, description: "Date/time the post was published (if found)" },
+                  engagementMetrics: {
+                    type: Type.OBJECT,
+                    properties: {
+                      likes: { type: Type.INTEGER },
+                      shares: { type: Type.INTEGER },
+                      comments: { type: Type.INTEGER },
+                      views: { type: Type.INTEGER }
+                    }
+                  }
+                }
+              },
+              description: "Information about social media posts/profiles if the target is a social media link"
+            }
+          }
+        };
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3.1-pro-preview",
+          contents: `You are an AI intelligence assistant for law enforcement. An officer has requested an analysis of the following link: ${urlToAnalyze}. Use Google Search to investigate this target. Present a highly formal, objective, and detailed intelligence report following the response schema. If this is a social media link, extract post details, user information (publicly available), and engagement metrics, and populate 'socialMediaPosts' with a list of relevant posts. Include a chronological timeline of significant events (such as domain registration, latest updates, or social media activity) in the 'timeline' field. The report MUST be written in ${lang === 'th' ? 'Thai' : 'English'} language.`,
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+            responseSchema: responseSchema,
+          }
+        });
+
+        let text = response.text?.trim() || "{}";
+        if (text.startsWith("```json")) text = text.slice(7, -3).trim();
+        if (text.startsWith("```")) text = text.slice(3, -3).trim();
+
+        const firstBrace = text.indexOf('{');
+        if (firstBrace !== -1 && !text.startsWith('{')) {
+          const lastBrace = text.lastIndexOf('}');
+          if (lastBrace > firstBrace) text = text.substring(firstBrace, lastBrace + 1);
+        }
+
+        return JSON.parse(text);
+      })();
 
       const threatIntelPromise = fetch(`/api/threat-intel?url=${encodeURIComponent(urlToAnalyze)}`)
         .then(async res => {
@@ -442,7 +574,12 @@ export default function App() {
       setHistory(prev => [newEntry, ...prev.filter(h => h.url !== urlToAnalyze)].slice(0, 20));
 
     } catch (err: any) {
-      setError(err?.message || "Failed to analyze the target URL.");
+      console.error(err);
+      if (err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED')) {
+        setError("Analysis rate limit exceeded. Please try scanning fewer URLs or wait a moment.");
+      } else {
+        setError(err?.message || "Failed to analyze the target URL.");
+      }
       setProgress(0);
     } finally {
       setIsAnalyzing(false);
@@ -780,9 +917,25 @@ export default function App() {
                     </CardHeader>
                     <CardContent className="p-0">
                       <div className="flex flex-col">
-                        <div className="px-6 py-3 border-b border-slate-100 flex flex-col gap-1">
+                        <div className="px-6 py-3 border-b border-slate-100 flex flex-col justify-center gap-1">
                           <span className="text-[10px] uppercase font-semibold tracking-widest text-slate-400">IP Address</span>
-                          <span className="text-sm font-mono text-slate-800 font-medium">{report.ipInfo?.ip || "UNKNOWN"}</span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm font-mono text-slate-800 font-medium">{report.ipInfo?.ip || "UNKNOWN"}</span>
+                            {report.ipInfo?.ip && (
+                              <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="h-6 px-2 text-[10px] font-medium"
+                                onClick={() => {
+                                  setPreview(null);
+                                  executeDeepScan(report.ipInfo!.ip!);
+                                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                                }}
+                              >
+                                Scan IP <Search className="ml-1 w-3 h-3" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
                         <div className="px-6 py-3 border-b border-slate-100 flex flex-col gap-1">
                           <span className="text-[10px] uppercase font-semibold tracking-widest text-slate-400">Organization / ISP</span>
@@ -796,25 +949,62 @@ export default function App() {
                           <span className="text-[10px] uppercase font-semibold tracking-widest text-slate-400">Registration Info</span>
                           <span className="text-sm font-mono text-slate-800">{report.ipInfo?.registrationDate || "UNKNOWN"}</span>
                         </div>
-                        <div className="px-6 py-3 border-b border-slate-100 flex flex-col gap-1">
-                          <span className="text-[10px] uppercase font-semibold tracking-widest text-slate-400">IP Reputation Score</span>
-                          <div className="flex items-center gap-2">
-                             <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-                                <div 
-                                  className={`h-full ${report.ipInfo?.reputationScore && report.ipInfo.reputationScore > 70 ? 'bg-red-500' : report.ipInfo?.reputationScore && report.ipInfo.reputationScore > 30 ? 'bg-amber-500' : 'bg-emerald-500'}`} 
-                                  style={{ width: `${report.ipInfo?.reputationScore || 0}%` }}
-                                ></div>
-                             </div>
-                             <span className="text-xs font-mono font-medium w-8 text-right bg-slate-50 border border-slate-200 px-1 rounded">{report.ipInfo?.reputationScore !== undefined ? report.ipInfo.reputationScore : "N/A"}</span>
+                        <div className="px-6 py-4 border-b border-slate-100 flex flex-col gap-2">
+                          <span className="text-[10px] uppercase font-semibold tracking-widest text-slate-400">IP Reputation</span>
+                          <div className="flex items-center gap-4">
+                            {report.ipInfo?.reputationScore !== undefined ? (() => {
+                              const score = report.ipInfo.reputationScore;
+                              const riskColorHex = score >= 70 ? '#ef4444' : score >= 30 ? '#f59e0b' : '#10b981';
+                              const riskColorClass = score >= 70 ? 'text-red-500' : score >= 30 ? 'text-amber-500' : 'text-emerald-500';
+                              const riskLabel = score >= 70 ? 'High Risk' : score >= 30 ? 'Suspicious' : 'Clean';
+                              return (
+                                <>
+                                  <div className="relative flex flex-col items-center justify-end h-10">
+                                    <svg className="w-16 h-8 absolute top-0" viewBox="0 0 80 40">
+                                      <path d="M 10 35 A 30 30 0 0 1 70 35" fill="none" stroke="#f1f5f9" strokeWidth="8" strokeLinecap="round" />
+                                      <path d="M 10 35 A 30 30 0 0 1 70 35" fill="none" stroke={riskColorHex} strokeWidth="8" strokeLinecap="round" strokeDasharray="100" strokeDashoffset={100 - score} pathLength="100" className="transition-all duration-1000 ease-out" />
+                                    </svg>
+                                    <div className={`text-base font-bold font-mono leading-none ${riskColorClass}`}>{score}</div>
+                                  </div>
+                                  <div className="flex flex-col">
+                                    <span className={`text-sm font-semibold ${riskColorClass}`}>{riskLabel}</span>
+                                    <span className="text-[10px] text-slate-500">Global threat intelligence score</span>
+                                  </div>
+                                </>
+                              );
+                            })() : (
+                              <span className="text-sm font-mono text-slate-500">Score Unavailable</span>
+                            )}
                           </div>
                         </div>
-                        <div className="px-6 py-3 flex flex-col gap-1">
+                        <div className="px-6 py-3 border-b border-slate-100 flex flex-col gap-1">
                           <span className="text-[10px] uppercase font-semibold tracking-widest text-slate-400">Geo-Location</span>
                           <span className="text-sm font-mono text-slate-800 flex items-center gap-2">
                             <MapPin className="w-3.5 h-3.5 text-slate-400" />
                             {report.ipInfo?.location || "UNKNOWN"}
                           </span>
                         </div>
+                        {report.ipInfo?.associatedDomains && report.ipInfo.associatedDomains.length > 0 && (
+                          <div className="px-6 py-3 flex flex-col gap-2">
+                            <span className="text-[10px] uppercase font-semibold tracking-widest text-slate-400">Associated Domains</span>
+                            <div className="flex flex-wrap gap-2">
+                              {report.ipInfo.associatedDomains.map((domain, i) => (
+                                <button
+                                  key={i}
+                                  className="text-xs font-mono text-blue-600 hover:text-blue-800 hover:underline flex items-center"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setPreview(null);
+                                    executeDeepScan(domain);
+                                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                                  }}
+                                >
+                                  {domain} <Search className="w-3 h-3 ml-1 opacity-70" />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </CardContent>
                   </Card>
@@ -954,19 +1144,6 @@ export default function App() {
                       <CardContent className="p-4 bg-white animate-in slide-in-from-top-2 duration-200">
                         {clearanceLevel >= 2 ? (
                           <div className="space-y-4">
-                            {report.ipInfo?.associatedDomains && report.ipInfo.associatedDomains.length > 0 && (
-                               <div className="mb-6">
-                                 <h4 className="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-3">Co-hosted Domains (Same IP)</h4>
-                                 <div className="flex flex-wrap gap-2">
-                                    {report.ipInfo.associatedDomains.map((domain, i) => (
-                                      <Button key={i} variant="outline" size="sm" className="h-7 text-xs font-mono bg-slate-50 text-slate-600 border-slate-200" onClick={() => { setPreview(null); executeDeepScan(domain); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-                                        {domain} <ExternalLink className="w-3 h-3 ml-1" />
-                                      </Button>
-                                    ))}
-                                 </div>
-                               </div>
-                            )}
-
                             <div>
                               <h4 className="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-3">Discovered Pivot Points</h4>
                               {report.relatedLinks && report.relatedLinks.length > 0 ? (
